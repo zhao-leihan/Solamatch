@@ -1,4 +1,5 @@
-# <img src="solana.png" width="40" height="40" alt="Solana Logo" /> SolaMatch — On-Chain Order Matching Engine
+# <img src="solana.png" width="100" height="100" alt="Solana Logo" /> 
+## SolaMatch — On-Chain Order Matching Engine
 
 > **A traditional centralized exchange order book rebuilt as a trustless Solana program.**  
 > Built for the *"Rebuild Backend Systems as On-Chain Rust Programs"* community challenge.
