@@ -1,0 +1,20 @@
+[package]
+name = "order-matching-engine"
+version = "0.1.0"
+description = "Solana On-Chain Order Matching Engine"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "order_matching_engine"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = "0.32.1"
