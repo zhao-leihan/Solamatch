@@ -23,15 +23,23 @@
 
 ## 📸 Screenshots
 
+### 🖥️ Frontend
+
 | **Landing Page (Hero & Stats)** | **Architecture Comparison** |
 |---|---|
-| ![Landing Page](Screenshot/Screenshot%202026-02-20%20133611.png) | ![Arch](Screenshot/Screenshot%202026-02-20%20133600.png) |
+| ![Landing Page](Screenshot/Screenshot%202026-02-20%20133611.png) | ![Architecture](Screenshot/Screenshot%202026-02-20%20133600.png) |
 
 | **Live Order Book** | **Place Order Form** |
 |---|---|
 | ![Order Book](Screenshot/Screenshot%202026-02-20%20133550.png) | ![Place Order](Screenshot/Screenshot%202026-02-20%20133542.png) |
 
 ---
+
+### ⚙️ Backend Review
+
+| **Backend View 1** | **Backend View 2** | **Backend View 3** |
+|---|---|---|
+| ![Backend 1](Screenshot/Screenshot%20(681).png) | ![Backend 2](Screenshot/Screenshot%20(682).png) | ![Backend 3](Screenshot/Screenshot%20(683).png) |
 
 ## 🏛️ Architecture
 
