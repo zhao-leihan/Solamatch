@@ -39,8 +39,8 @@
 
 | **Backend View 1** | **Backend View 2** | **Backend View 3** |
 |---|---|---|
-| ![Backend 1](Screenshot/Screenshot%20(681).png) | ![Backend 2](Screenshot/Screenshot%20(682).png) | ![Backend 3](Screenshot/Screenshot%20(683).png) |
-
+| ![Backend 1](Screenshot/Screenshot%20(681).png) | ![Backend 2](Screenshot/Screenshot%20(682).png) | 
+| ![Backend 3](Screenshot/Screenshot%20(683).png) |
 ## 🏛️ Architecture
 
 ### The Core Insight
