@@ -37,9 +37,11 @@
 
 ### ⚙️ Backend Review
 
-| **Backend View 1** | **Backend View 2** | **Backend View 3** |
-|---|---|---|
+| **Backend View 1** | **Backend View 2** | 
+|---|---|
 | ![Backend 1](Screenshot/Screenshot%20(681).png) | ![Backend 2](Screenshot/Screenshot%20(682).png) | 
+| **Backend View 3** |
+|---|
 | ![Backend 3](Screenshot/Screenshot%20(683).png) |
 ## 🏛️ Architecture
 
