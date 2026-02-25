@@ -15,7 +15,6 @@ import {
     Connection,
     Keypair,
     PublicKey,
-    Transaction,
     ComputeBudgetProgram,
     clusterApiUrl,
 } from '@solana/web3.js';
@@ -23,11 +22,10 @@ import {
     AnchorProvider,
     Program,
     Wallet,
-    BN,
 } from '@coral-xyz/anchor';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -60,14 +58,28 @@ interface ApiOrderBook {
 
 // ── Load IDL & wallet ─────────────────────────────────────────────────────────
 
-const idl = JSON.parse(readFileSync(join(__dirname, '../../target/idl/order_matching_engine.json'), 'utf8'));
+const IDL_PATH = process.env.IDL_PATH
+    ?? resolve(__dirname, '../../target/idl/order_matching_engine.json');
+
+if (!existsSync(IDL_PATH)) {
+    console.error(`
+[Crank] ❌ IDL not found at:
+  ${IDL_PATH}
+
+→ Fix: Run 'anchor build' from the project root, then restart the crank.
+`);
+    process.exit(1);
+}
+
+const idl = JSON.parse(readFileSync(IDL_PATH, 'utf8'));
 const keypairBytes = JSON.parse(readFileSync(KEYPAIR_PATH, 'utf8'));
 const crankerKeypair = Keypair.fromSecretKey(Uint8Array.from(keypairBytes));
 
 const connection = new Connection(RPC_URL, { commitment: 'confirmed' });
 const wallet = new Wallet(crankerKeypair);
+// Anchor 0.32: Program constructor is (idl, provider) — program ID comes from IDL
 const provider = new AnchorProvider(connection, wallet, { commitment: 'confirmed', skipPreflight: true });
-const program = new Program(idl, PROGRAM_ID, provider);
+const program = new Program(idl, provider);
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
 
@@ -149,9 +161,10 @@ async function submitMatch(
             microLamports: PRIORITY_FEE_LAMPORTS,
         });
 
-        // match_orders instruction — FeeConfig is optional
-        // Pass treasury as a dummy pubkey if no fee config (the program handles Optional)
-        const tx = await program.methods
+        // match_orders instruction — cast to any avoids Anchor's deep TS generics
+        // (known limitation with untyped IDL — safe at runtime, IDL still validates the call)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const tx = await (program as any).methods
             .matchOrders(MAX_SLIPPAGE_BPS)
             .accounts({
                 matcher: crankerKeypair.publicKey,
@@ -160,7 +173,6 @@ async function submitMatch(
                 askOrder: askOrderPda,
                 bidOwner,
                 askOwner,
-                // fee_config and treasury are optional — Anchor handles None
             })
             .preInstructions([priorityFeeIx])
             .transaction();

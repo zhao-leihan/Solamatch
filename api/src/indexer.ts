@@ -8,10 +8,10 @@ import {
     Connection,
     PublicKey,
     clusterApiUrl,
-    ConfirmedSignatureInfo,
-    ParsedTransactionWithMeta,
 } from '@solana/web3.js';
-import { BorshAccountsCoder, Idl } from '@coral-xyz/anchor';
+import { BorshCoder, EventParser, Idl } from '@coral-xyz/anchor';
+import { existsSync, readFileSync } from 'fs';
+import { resolve } from 'path';
 import {
     DecodedOrder,
     DecodedMarket,
@@ -20,8 +20,25 @@ import {
     Trade,
 } from './types.js';
 
-// Load IDL — path resolved at runtime from project root
-import idl from '../../../target/idl/order_matching_engine.json' assert { type: 'json' };
+// ── IDL Loading ───────────────────────────────────────────────────────────────
+// Default: <project_root>/target/idl/order_matching_engine.json
+// Override with IDL_PATH env var.
+const IDL_PATH = process.env.IDL_PATH
+    ?? resolve(__dirname, '../../../target/idl/order_matching_engine.json');
+
+if (!existsSync(IDL_PATH)) {
+    console.error(`
+[SolaMatch API] ❌ IDL not found at:
+  ${IDL_PATH}
+
+→ Fix: Run 'anchor build' from the project root, then restart the server.
+  Or set the IDL_PATH environment variable to the correct path.
+`);
+    process.exit(1);
+}
+
+const idl: Idl = JSON.parse(readFileSync(IDL_PATH, 'utf-8'));
+
 
 const PROGRAM_ID = new PublicKey('77aLU4dN1NTAWVGhNcNgWFwQ5K9XwkFnEWMLjGWWZBDD');
 const RPC_URL = process.env.RPC_URL ?? clusterApiUrl('devnet');
@@ -31,7 +48,7 @@ type TradeCallback = (trade: Trade) => void;
 
 export class SolanaIndexer {
     private connection: Connection;
-    private coder: BorshAccountsCoder;
+    private coder: BorshCoder;
 
     // In-memory caches
     private markets = new Map<string, DecodedMarket>();
@@ -43,12 +60,15 @@ export class SolanaIndexer {
     private orderBookListeners: OrderBookUpdateCallback[] = [];
     private tradeListeners: TradeCallback[] = [];
 
+    private eventParser: EventParser;
+
     constructor() {
         this.connection = new Connection(RPC_URL, {
             commitment: 'confirmed',
             wsEndpoint: RPC_URL.replace('https', 'wss').replace('http', 'ws'),
         });
-        this.coder = new BorshAccountsCoder(idl as Idl);
+        this.coder = new BorshCoder(idl as Idl);
+        this.eventParser = new EventParser(PROGRAM_ID, this.coder);
     }
 
     // ── Public API ─────────────────────────────────────────────────────────────
@@ -129,7 +149,7 @@ export class SolanaIndexer {
 
         try {
             // Try decoding as Market
-            const market = this.coder.decode<any>('Market', data);
+            const market = this.coder.accounts.decode<any>('Market', data);
             const decoded: DecodedMarket = {
                 pubkey,
                 authority: market.authority.toBase58(),
@@ -145,7 +165,7 @@ export class SolanaIndexer {
 
         try {
             // Try decoding as Order
-            const order = this.coder.decode<any>('Order', data);
+            const order = this.coder.accounts.decode<any>('Order', data);
             const decoded: DecodedOrder = {
                 pubkey,
                 owner: order.owner.toBase58(),
@@ -196,15 +216,12 @@ export class SolanaIndexer {
     }
 
     private async parseTradeFromLogs(logs: string[], signature: string) {
-        // Anchor emits events as base64 in log lines prefixed with "Program data: "
-        for (const log of logs) {
-            if (!log.startsWith('Program data: ')) continue;
-            try {
-                const b64 = log.slice('Program data: '.length);
-                const buf = Buffer.from(b64, 'base64');
-                const event = this.coder.events.decode(buf.toString('base64'));
-                if (!event || event.name !== 'TradeExecutedEvent') continue;
-
+        // Use Anchor's EventParser to decode on-chain events from transaction logs.
+        // EventParser handles the "Program data: <base64>" lines internally.
+        try {
+            const events = [...this.eventParser.parseLogs(logs)];
+            for (const event of events) {
+                if (event.name !== 'TradeExecutedEvent') continue;
                 const d = event.data as any;
                 const trade: Trade = {
                     bidOrderId: d.bidOrderId.toNumber(),
@@ -219,12 +236,11 @@ export class SolanaIndexer {
                     signature,
                 };
                 this.trades.push(trade);
-                // Keep last 1,000 trades in memory
                 if (this.trades.length > 1000) this.trades.shift();
                 this.tradeListeners.forEach(cb => cb(trade));
-            } catch {
-                // Not a SolaMatch event — skip
             }
+        } catch {
+            // Ignore non-SolaMatch logs
         }
     }
 }
