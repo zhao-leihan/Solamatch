@@ -21,6 +21,7 @@ pub struct TradeExecutedEvent {
     pub seller: Pubkey,
     pub fill_price: u64,
     pub fill_quantity: u64,
+    pub fee_amount: u64,       // Protocol fee deducted from seller payment
     pub timestamp: i64,
 }
 
@@ -30,4 +31,12 @@ pub struct OrderCancelledEvent {
     pub owner: Pubkey,
     pub market: Pubkey,
     pub refund_lamports: u64,
+}
+
+#[event]
+pub struct MarketPausedEvent {
+    pub market: Pubkey,
+    pub authority: Pubkey,
+    pub is_paused: bool,
+    pub timestamp: i64,
 }
