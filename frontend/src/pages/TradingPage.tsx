@@ -40,6 +40,7 @@ interface Trade {
 interface MarketInfo {
     marketName: string; nextOrderId: number;
     totalBidVolume: number; totalAskVolume: number;
+    isPaused: boolean;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -125,8 +126,10 @@ export default function TradingPage() {
             const name = data.slice(off, off + nameLen).toString("utf8"); off += nameLen;
             const nextOrderId = Number(data.readBigUInt64LE(off)); off += 8;
             const totalBidVolume = Number(data.readBigUInt64LE(off)); off += 8;
-            const totalAskVolume = Number(data.readBigUInt64LE(off));
-            setMarket({ marketName: name, nextOrderId, totalBidVolume, totalAskVolume });
+            const totalAskVolume = Number(data.readBigUInt64LE(off)); off += 8;
+            // is_paused bool is the next byte after totalAskVolume
+            const isPaused = data[off] === 1;
+            setMarket({ marketName: name, nextOrderId, totalBidVolume, totalAskVolume, isPaused });
         } catch (e: any) { showToast(e.message, "err"); }
         finally { setFetching(false); }
     }, [marketAddr, connection]);
@@ -239,9 +242,15 @@ export default function TradingPage() {
                 <Flex align="center" gap="3">
                     <img src={logoImg} alt="SolaMatch" className="logo-img" style={{ height: 32 }} />
                     <Badge color="violet" variant="soft" size="1">DEVNET</Badge>
-                    <Badge color="green" variant="soft" size="1">
-                        <ActivityLogIcon /> LIVE
-                    </Badge>
+                    {market?.isPaused ? (
+                        <Badge color="red" variant="solid" size="1">
+                            🛑 MARKET PAUSED
+                        </Badge>
+                    ) : (
+                        <Badge color="green" variant="soft" size="1">
+                            <ActivityLogIcon /> LIVE
+                        </Badge>
+                    )}
                     {fetching && <Spinner size="1" />}
                 </Flex>
 
@@ -260,6 +269,23 @@ export default function TradingPage() {
                         </TextField.Slot>
                     </TextField.Root>
 
+                    {/* API Gateway Docs link */}
+                    <a
+                        href="http://localhost:3000/docs"
+                        target="_blank"
+                        rel="noreferrer"
+                        title="Open Swagger API Docs"
+                        style={{
+                            display: "flex", alignItems: "center", gap: 5,
+                            color: "#14f195", textDecoration: "none",
+                            fontSize: 12, fontWeight: 600, opacity: 0.85,
+                            border: "1px solid rgba(20,241,149,0.25)",
+                            borderRadius: 6, padding: "4px 10px",
+                        }}
+                    >
+                        API Docs ↗
+                    </a>
+
                     <WalletMultiButton style={{ height: 34, fontSize: 13, borderRadius: 8 }} />
 
                     <IconButton size="2" variant="soft" color="gray" onClick={disconnect} title="Disconnect">
@@ -272,9 +298,10 @@ export default function TradingPage() {
             <div className="stats-bar">
                 {[
                     { label: "Market", value: market?.marketName ?? "—", accent: "violet" },
-                    { label: "Total Orders", value: market?.nextOrderId != null ? market.nextOrderId : "—", accent: "blue" },
+                    { label: "Status", value: market?.isPaused ? "⏸ PAUSED" : "✅ Active", accent: market?.isPaused ? "red" : "green" },
                     { label: "Bids", value: bids.length, accent: "green" },
                     { label: "Asks", value: asks.length, accent: "red" },
+                    { label: "Spread", value: spread, accent: "violet" },
                     { label: "SOL Balance", value: solBalance !== null ? `${solBalance.toFixed(4)} ◎` : "—", accent: "yellow" },
                 ].map(s => (
                     <Card key={s.label} className="stat-card">
