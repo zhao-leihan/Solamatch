@@ -24,7 +24,7 @@ import {
 // Default: <project_root>/target/idl/order_matching_engine.json
 // Override with IDL_PATH env var.
 const IDL_PATH = process.env.IDL_PATH
-    ?? resolve(__dirname, '../../../target/idl/order_matching_engine.json');
+    ?? resolve(__dirname, '../../target/idl/order_matching_engine.json');
 
 if (!existsSync(IDL_PATH)) {
     console.error(`
