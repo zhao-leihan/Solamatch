@@ -1,0 +1,346 @@
+================================================================================
+  SOLAMATCH — LAPORAN TEKNIS PROGRAM
+  On-Chain Order Matching Engine (OME) — Production B2B Build
+  Tanggal: 25 Februari 2026
+================================================================================
+
+--------------------------------------------------------------------------------
+1. GAMBARAN UMUM (OVERVIEW)
+--------------------------------------------------------------------------------
+
+SolaMatch adalah sebuah order matching engine (mesin pencocokan pesanan) yang
+berjalan sepenuhnya on-chain di atas blockchain Solana. Program ini dibangun
+menggunakan framework Anchor (versi 0.32.1) dan mengimplementasikan sistem
+perdagangan desentralisasi (DEX) yang trustless, self-custodial, dan dapat
+dikonfigurasi untuk kebutuhan B2B (Business-to-Business).
+
+Program tidak memerlukan server terpusat untuk mencocokkan pesanan. Semua
+logika validasi, pencocokan, dan settlement berjalan sepenuhnya dalam Solana
+program (on-chain), sehingga dapat diaudit secara publik dan tidak dapat
+dimanipulasi oleh pihak ketiga.
+
+Program ID  : 77aLU4dN1NTAWVGhNcNgWFwQ5K9XwkFnEWMLjGWWZBDD
+Network     : Solana Devnet
+Framework   : Anchor 0.32.1 (Rust)
+Bahasa      : Rust (on-chain), TypeScript (off-chain)
+
+--------------------------------------------------------------------------------
+2. ARSITEKTUR SISTEM
+--------------------------------------------------------------------------------
+
+Sistem SolaMatch terdiri dari 4 komponen utama:
+
+  [1] ON-CHAIN PROGRAM (Rust / Anchor)
+      └── programs/order-matching-engine/src/
+          ├── lib.rs       — Semua instruksi (7 instruksi)
+          ├── state.rs     — Definisi akun PDA (Market, Order, FeeConfig)
+          ├── errors.rs    — Custom error codes
+          └── events.rs    — Event definitions (TradeExecutedEvent, dll.)
+
+  [2] API GATEWAY (Node.js / TypeScript)
+      └── api/src/
+          ├── server.ts    — Fastify server, Swagger UI, WebSocket
+          ├── indexer.ts   — Solana account subscriber & in-memory cache
+          ├── routes.ts    — REST endpoints (OpenAPI 3.0)
+          └── types.ts     — Shared TypeScript types
+
+  [3] HIGH-PERFORMANCE CRANK (TypeScript)
+      └── crank/src/
+          └── crank.ts     — Automated matching service (O(N) two-pointer)
+
+  [4] FRONTEND (React / TypeScript)
+      └── frontend/src/
+          ├── pages/LandingPage.tsx  — B2B landing page
+          └── pages/TradingPage.tsx  — Live trading terminal
+
+--------------------------------------------------------------------------------
+3. ON-CHAIN PROGRAM — INSTRUKSI (INSTRUCTIONS)
+--------------------------------------------------------------------------------
+
+Program memiliki 7 instruksi yang dapat dipanggil oleh client:
+
+  No.  Instruksi               Siapa yang Bisa       Keterangan
+  ---  ----------------------  -------------------   ---------------------------
+  1.   initialize_market       Siapa saja             Membuat Market PDA baru
+  2.   place_order             Wallet pengguna        Menempatkan bid/ask order
+  3.   match_orders            Crank (siapa saja)     Mencocokkan bid dan ask
+  4.   cancel_order            Pemilik order          Membatalkan order aktif
+  5.   initialize_fee_config   Market authority       Mengatur fee bps & treasury
+  6.   update_fee_config       Market authority       Update fee rate / treasury
+  7.   pause_market            Market authority       Emergency pause / resume
+
+Catatan: cancel_order TIDAK terpengaruh oleh pause — user tetap bisa menarik
+dana meskipun pasar sedang dipause (fitur keamanan penting).
+
+--------------------------------------------------------------------------------
+4. STRUKTUR AKUN PDA (PROGRAM DERIVED ADDRESSES)
+--------------------------------------------------------------------------------
+
+A. Market Account
+   Seeds     : ["market", authority_pubkey, market_name]
+   Fields    : authority, market_name, next_order_id,
+               total_bid_volume, total_ask_volume, bump, is_paused
+   Ukuran    : Market::LEN bytes
+
+B. Order Account
+   Seeds     : ["order", market_pubkey, order_id_bytes]
+   Fields    : owner, market, order_id, side (Buy/Sell), price, quantity,
+               filled_quantity, status, timestamp, bump, is_locked, expires_at
+   Ukuran    : Order::LEN bytes
+   Catatan   :
+     - is_locked   : Re-entrancy guard (double-match protection)
+     - expires_at  : TTL order dalam unix timestamp (0 = tidak ada expiry)
+
+C. FeeConfig Account
+   Seeds     : ["fee_config", market_pubkey]
+   Fields    : market, fee_bps, treasury, accumulated_fees, bump
+   Ukuran    : FeeConfig::LEN bytes
+   Batas     : fee_bps maksimum 500 (= 5% dari nilai trade)
+
+D. Escrow (Buy Orders)
+   Untuk setiap buy order, SOL di-escrow langsung ke dalam Order PDA.
+   Dana tidak pernah transit ke akun pihak ketiga.
+
+--------------------------------------------------------------------------------
+5. FITUR KEAMANAN DAN ROBUSTNESS
+--------------------------------------------------------------------------------
+
+  A. Emergency Pause (Kill Switch)
+     - Authority dapat memause pasar dalam satu transaksi.
+     - Semua place_order dan match_orders akan direject saat paused.
+     - cancel_order tetap bisa berjalan (user selalu dapat menarik dana).
+     - Event MarketPausedEvent diterbitkan ke on-chain log.
+
+  B. Re-entrancy Protection (is_locked)
+     - Order dikunci (is_locked = true) saat masuk ke dalam proses matching.
+     - Jika ada percobaan double-match sebelum transaksi selesai, program
+       akan menolak dengan error OrderLocked.
+
+  C. Order Time-To-Live (expires_at)
+     - Setiap order dapat memiliki timestamp kedaluwarsa.
+     - match_orders akan menolak order yang sudah expire (error OrderExpired).
+
+  D. Slippage Protection
+     - match_orders menerima parameter max_slippage_bps.
+     - Jika harga fill menyimpang lebih dari batas, transaksi dibatalkan
+       dengan error SlippageExceeded.
+
+  E. Fee Cap
+     - Maximum fee_bps yang dapat diset adalah 500 (5%).
+     - Jika lebih, program menolak dengan error FeeBpsTooHigh.
+
+  F. Custom Error Codes
+     - MarketPaused, OrderLocked, OrderExpired, SlippageExceeded,
+       FeeBpsTooHigh, TreasuryMismatch, InsufficientFunds, InvalidPrice,
+       InvalidQuantity, OrderNotActive, Unauthorized, InvalidMarket,
+       MarketNotPaused.
+
+--------------------------------------------------------------------------------
+6. FEE COLLECTOR — MEKANISME FEE
+--------------------------------------------------------------------------------
+
+Alur fee saat terjadi trade:
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │  Bid PDA Escrow (SOL)                                        │
+  │       │                                                      │
+  │       ├── (seller_payment - fee)  ─────► ask_owner (seller) │
+  │       ├── fee                     ─────► treasury wallet     │
+  │       └── buyer_refund (jika ada) ─────► bid_owner (buyer)  │
+  └─────────────────────────────────────────────────────────────┘
+
+  - Fee dihitung: fee = (fill_quantity * fill_price * fee_bps) / 10_000
+  - Fee dilacak pada FeeConfig.accumulated_fees untuk audit on-chain.
+  - FeeConfig bersifat opsional — market tanpa fee_config berjalan normal
+    tanpa pemotongan fee.
+
+--------------------------------------------------------------------------------
+7. API GATEWAY
+--------------------------------------------------------------------------------
+
+Server teknologi : Fastify (Node.js)
+Port default      : 3000
+Dokumentasi API   : http://localhost:3000/docs  (Swagger UI)
+                    http://localhost:3000/redoc  (Redoc)
+
+REST Endpoints:
+  GET  /health                            — Health check
+  GET  /markets                           — Semua market yang ditrack
+  GET  /markets/:pubkey                   — Info satu market
+  GET  /markets/:pubkey/orderbook         — Snapshot bids & asks
+  GET  /markets/:pubkey/trades            — Riwayat trade
+  GET  /orders/:pubkey                    — Info satu order
+
+WebSocket (ws://localhost:3000/ws):
+  Client kirim  : { "type": "subscribe",   "market": "<MARKET_PUBKEY>" }
+  Client kirim  : { "type": "unsubscribe", "market": "<MARKET_PUBKEY>" }
+  Server kirim  : { "type": "orderbook_update", "data": { bids, asks } }
+  Server kirim  : { "type": "trade_executed", "data": { fillPrice, feeAmount, ... } }
+
+Fitur API Gateway:
+  - Real-time subscription via WebSocket
+  - Swagger UI dengan tema SolaMatch (purple/green)
+  - CORS enabled untuk semua origin
+  - In-memory orderbook cache (decoded Borsh accounts)
+  - EventParser untuk parse TradeExecutedEvent dari transaction logs
+
+Konfigurasi (Environment Variables):
+  RPC_URL    = URL Solana RPC endpoint (default: devnet)
+  PORT       = Port API server (default: 3000)
+  HOST       = Host API server (default: 0.0.0.0)
+  IDL_PATH   = Path ke IDL JSON (default: ../../target/idl/...)
+
+--------------------------------------------------------------------------------
+8. HIGH-PERFORMANCE CRANK
+--------------------------------------------------------------------------------
+
+Crank adalah service off-chain yang secara otomatis memanggil match_orders
+untuk setiap pasangan bid/ask yang saling crossing.
+
+Algoritma:
+  1. Fetch order book dari API Gateway (bukan RPC langsung — hemat bandwidth)
+  2. O(N) Two-Pointer scan pada array bids (DESC) dan asks (ASC)
+  3. Skip order yang locked atau expired (client-side filter)
+  4. Submit SEMUA pasangan crossing secara PARALLEL dalam satu slot
+  5. Setiap transaksi diberi priority fee via ComputeBudgetProgram
+  6. skipPreflight = true untuk kecepatan maksimum
+
+Kompleksitas : O(bids + asks) per slot — tidak ada nested loop
+Polling       : Setiap ~400ms (1 Solana slot)
+
+Konfigurasi (Environment Variables):
+  MARKET_PUBKEY       = PDA pasar yang ingin di-crank (WAJIB)
+  API_URL             = URL API Gateway (default: http://localhost:3000)
+  RPC_URL             = URL Solana RPC
+  KEYPAIR_PATH        = Path ke keypair crank (default: ~/.config/solana/id.json)
+  POLL_MS             = Interval polling dalam ms (default: 400)
+  MAX_SLIPPAGE_BPS    = Batas slippage dalam basis poin (default: 50)
+  PRIORITY_FEE_LAMPORTS = Priority fee dalam microlamports (default: 5000)
+
+--------------------------------------------------------------------------------
+9. FRONTEND — TRADING TERMINAL
+--------------------------------------------------------------------------------
+
+Teknologi : React + TypeScript + Vite
+UI Library : Radix UI Themes
+Wallet     : @solana/wallet-adapter-react (Phantom, Solflare, Backpack, dll.)
+
+Halaman:
+  A. Landing Page (B2B)
+     - Hero section dengan tagline B2B
+     - 6 enterprise feature cards
+     - API integration quickstart (5 baris kode)
+     - Perbandingan Traditional DEX vs SolaMatch
+     - Pricing section (Gratis vs B2B 0.3%/trade)
+     - Navigasi ke API Docs & Pricing
+
+  B. Trading Terminal
+     - Live order book (bid/ask table) — polling setiap 10 detik dari chain
+     - Status bar: Market Name, Status (LIVE/PAUSED), Bids, Asks, Spread, SOL Balance
+     - 🛑 PAUSED badge merah di header saat market.is_paused = true
+     - Recent Trades dengan harga dan waktu
+     - Place Order form (Buy/Sell)
+     - API Docs ↗ link → Swagger UI
+     - Koneksi langsung ke Solana Devnet via RPC
+
+--------------------------------------------------------------------------------
+10. CARA MENJALANKAN (HOW TO RUN)
+--------------------------------------------------------------------------------
+
+Prasyarat:
+  - Rust + Cargo
+  - Solana CLI (solana-install)
+  - Anchor CLI (avm install 0.32.1)
+  - Node.js v20+
+  - npm
+
+Langkah 1 — Build program Rust:
+  cd "c:\Users\Rayhan\Music\Solana Project"
+  anchor build
+
+Langkah 2 — Deploy ke Devnet:
+  anchor deploy --provider.cluster devnet
+
+Langkah 3 — Jalankan API Gateway:
+  cd api
+  npm install
+  npm run dev
+  # → Swagger UI: http://localhost:3000/docs
+  # → WebSocket: ws://localhost:3000/ws
+
+Langkah 4 — Jalankan Crank:
+  cd crank
+  npm install
+  MARKET_PUBKEY=<market_pda> npm run dev
+
+Langkah 5 — Jalankan Frontend:
+  cd frontend
+  npm install
+  npm run dev
+  # → http://localhost:5173
+
+Langkah 6 — Jalankan Test:
+  cd "c:\Users\Rayhan\Music\Solana Project"
+  anchor test
+
+--------------------------------------------------------------------------------
+11. STRUKTUR DIREKTORI LENGKAP
+--------------------------------------------------------------------------------
+
+Solana Project/
+├── programs/
+│   └── order-matching-engine/
+│       └── src/
+│           ├── lib.rs          — 7 instruksi on-chain
+│           ├── state.rs        — Market, Order, FeeConfig PDA structs
+│           ├── errors.rs       — 13 custom error codes
+│           └── events.rs       — TradeExecutedEvent, MarketPausedEvent
+├── api/
+│   └── src/
+│       ├── server.ts           — Fastify + Swagger + WebSocket
+│       ├── indexer.ts          — Solana account subscriber
+│       ├── routes.ts           — REST endpoints (OpenAPI 3.0)
+│       └── types.ts            — TypeScript types
+├── crank/
+│   └── src/
+│       └── crank.ts            — High-perf automated crank
+├── frontend/
+│   └── src/
+│       ├── pages/
+│       │   ├── LandingPage.tsx — B2B product landing page
+│       │   └── TradingPage.tsx — Live trading terminal
+│       └── assets/
+├── client/
+│   └── cli.ts                  — CLI untuk place-order, match, cancel
+├── tests/
+│   └── order-matching-engine.ts — Anchor test suite
+├── Anchor.toml
+├── Cargo.toml
+└── report.txt                  — File ini
+
+--------------------------------------------------------------------------------
+12. RINGKASAN FITUR
+--------------------------------------------------------------------------------
+
+  ✅ Fully on-chain trustless matching (no server custody)
+  ✅ Self-custodial SOL escrow di tiap Order PDA
+  ✅ 7 Anchor instructions (initialize, place, match, cancel, fee config, pause)
+  ✅ FeeConfig PDA — configurable fee 0-500bps streaming ke treasury
+  ✅ Emergency Pause kill switch (satu transaksi = seluruh pasar terhenti)
+  ✅ Re-entrancy lock (is_locked) per order
+  ✅ Order TTL (expires_at) dengan unix timestamp
+  ✅ Slippage protection (max_slippage_bps parameter)
+  ✅ O(N) two-pointer matching algorithm (crank)
+  ✅ Parallel tx submission per slot (crank)
+  ✅ REST API Gateway (Fastify + OpenAPI 3.0)
+  ✅ Real-time WebSocket feed (orderbook_update + trade_executed)
+  ✅ Swagger UI + Redoc documentation
+  ✅ B2B landing page dengan pricing dan quickstart
+  ✅ Live trading terminal dengan market pause indicator
+
+--------------------------------------------------------------------------------
+  Dibuat oleh  : Rayhan
+  Repositori   : https://github.com/zhao-leihan/Solamatch
+  Lisensi      : MIT
+  Tanggal      : 25 Februari 2026
+================================================================================
