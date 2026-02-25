@@ -10,8 +10,6 @@ import {
     BarChartIcon,
     CodeIcon,
     StopwatchIcon,
-    ShieldIcon,
-    CubeIcon,
 } from "@radix-ui/react-icons";
 import { Button, Text, Badge } from "@radix-ui/themes";
 
